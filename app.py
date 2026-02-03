@@ -60,26 +60,72 @@ if 'pft_data' not in st.session_state:
 if 'interpretation_done' not in st.session_state:
     st.session_state.interpretation_done = False
 
+def check_tesseract_installed():
+    """Check if Tesseract is installed and accessible"""
+    try:
+        pytesseract.get_tesseract_version()
+        return True
+    except:
+        return False
+
 def extract_text_from_image(image):
     """Extract text from image using OCR"""
     try:
+        # Check if Tesseract is available
+        if not check_tesseract_installed():
+            st.error("⚠️ **Tesseract OCR is not installed or not found in PATH**")
+            st.info("""
+            **To fix this issue:**
+            
+            **For Local Development:**
+            - **Windows:** Download from [UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki) and add to PATH
+            - **macOS:** Run `brew install tesseract`
+            - **Linux:** Run `sudo apt-get install tesseract-ocr`
+            
+            **For Streamlit Cloud Deployment:**
+            - Ensure `packages.txt` file is in your repository root
+            - The file should contain: `tesseract-ocr` and `poppler-utils`
+            - Redeploy your application
+            
+            **Alternative:** Use the **Manual Entry** option below to enter PFT values directly.
+            """)
+            return None
+        
         text = pytesseract.image_to_string(image)
         return text
+    except pytesseract.TesseractNotFoundError:
+        st.error("⚠️ **Tesseract executable not found in system PATH**")
+        st.info("""
+        **Quick Fix:**
+        1. Install Tesseract OCR on your system
+        2. Add Tesseract to your system PATH environment variable
+        3. Restart the application
+        
+        **Or use Manual Entry option below** 👇
+        """)
+        return None
     except Exception as e:
-        st.error(f"Error extracting text from image: {str(e)}")
-        return ""
+        st.error(f"❌ Error extracting text: {str(e)}")
+        st.warning("Please try Manual Entry option instead.")
+        return None
 
 def extract_text_from_pdf(pdf_file):
     """Extract text from PDF file"""
     try:
+        if not check_tesseract_installed():
+            st.error("⚠️ Tesseract OCR is required for PDF text extraction")
+            st.info("Please install Tesseract or use Manual Entry option.")
+            return None
+            
         images = pdf2image.convert_from_bytes(pdf_file.read())
         text = ""
         for image in images:
             text += pytesseract.image_to_string(image) + "\n"
         return text
     except Exception as e:
-        st.error(f"Error extracting text from PDF: {str(e)}")
-        return ""
+        st.error(f"❌ Error extracting text from PDF: {str(e)}")
+        st.warning("Please try Manual Entry option instead.")
+        return None
 
 def parse_pft_values(text):
     """Parse PFT values from extracted text"""
@@ -311,6 +357,15 @@ def get_ai_review(pft_data, pattern, api_key):
 # Main App
 st.markdown('<h1 class="main-header">🫁 Pulmonary Function Test (PFT) Analysis Tool</h1>', unsafe_allow_html=True)
 
+# Check OCR availability and show banner if not available
+if not check_tesseract_installed():
+    st.warning("""
+    ⚠️ **OCR Feature Unavailable**: Tesseract is not installed. 
+    Don't worry! You can still use this app by entering PFT values manually. 
+    See sidebar for installation instructions if you want to enable OCR.
+    """)
+
+
 # Sidebar
 with st.sidebar:
     st.header("About")
@@ -325,6 +380,14 @@ with st.sidebar:
     - AI-powered review (Gemini)
     """)
     
+    # OCR Status
+    st.header("OCR Status")
+    if check_tesseract_installed():
+        st.success("✅ Tesseract OCR: Available")
+    else:
+        st.warning("⚠️ Tesseract OCR: Not Found")
+        st.caption("Manual entry still available")
+    
     st.header("Instructions")
     st.markdown("""
     1. Upload your PFT report
@@ -332,6 +395,27 @@ with st.sidebar:
     3. View detailed interpretation
     4. Optional: Get AI review
     """)
+    
+    with st.expander("🔧 Troubleshooting OCR"):
+        st.markdown("""
+        **If OCR is not working:**
+        
+        1. **Check Installation:**
+           - Windows: Install from [tesseract-ocr](https://github.com/UB-Mannheim/tesseract/wiki)
+           - Mac: `brew install tesseract`
+           - Linux: `sudo apt install tesseract-ocr`
+        
+        2. **Add to PATH:**
+           - Find Tesseract installation directory
+           - Add to system PATH variable
+           - Restart application
+        
+        3. **Use Manual Entry:**
+           - Works without OCR
+           - Enter values directly
+           - Same analysis results
+        """)
+
 
 # Main content
 tab1, tab2, tab3 = st.tabs(["📤 Upload & Extract", "📊 Analysis & Interpretation", "🤖 AI Review"])
@@ -361,16 +445,26 @@ with tab1:
             
             with col2:
                 st.subheader("Extraction Options")
-                if st.button("🔍 Extract Values from Document", type="primary"):
+                
+                # Show OCR status
+                if check_tesseract_installed():
+                    st.success("✅ OCR Available")
+                else:
+                    st.error("❌ OCR Not Available")
+                    st.info("👉 Please use **Manual Entry** below")
+                
+                if st.button("🔍 Extract Values from Document", type="primary", disabled=not check_tesseract_installed()):
                     with st.spinner("Extracting text from document..."):
                         if 'image' in file_type:
                             image = Image.open(uploaded_file)
                             text = extract_text_from_image(image)
                         elif 'pdf' in file_type:
                             text = extract_text_from_pdf(uploaded_file)
+                        else:
+                            text = None
                         
                         if text:
-                            st.success("Text extracted successfully!")
+                            st.success("✅ Text extracted successfully!")
                             with st.expander("View extracted text"):
                                 st.text(text)
                             
@@ -378,9 +472,17 @@ with tab1:
                             parsed_data = parse_pft_values(text)
                             if parsed_data:
                                 st.session_state.pft_data = parsed_data
-                                st.success(f"Extracted {len(parsed_data)} PFT values!")
+                                st.success(f"✅ Extracted {len(parsed_data)} PFT values!")
+                                st.info("📝 Please review values below and make any corrections needed.")
                             else:
-                                st.warning("No PFT values automatically detected. Please enter manually below.")
+                                st.warning("⚠️ No PFT values automatically detected. Please enter manually below.")
+                        elif text is None:
+                            st.info("💡 **Tip:** You can still use this app! Just enter your PFT values manually in the form below.")
+                
+                # Always show manual entry option
+                if not check_tesseract_installed():
+                    st.divider()
+                    st.info("👇 **Proceed with Manual Entry below**")
     
     st.markdown('<div class="section-header">Step 2: Review/Enter PFT Values</div>', unsafe_allow_html=True)
     

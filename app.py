@@ -5,10 +5,11 @@ import pdf2image
 import pandas as pd
 import json
 import io
+import time
 
 # Page configuration
 st.set_page_config(
-    page_title="AI PFT Analyzer (Powered by Gemini)",
+    page_title="AI PFT Analyzer (Gemini Powered)",
     page_icon="🫁",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -59,15 +60,45 @@ def clean_json_string(json_str):
         json_str = json_str.replace("```", "")
     return json_str.strip()
 
+def get_gemini_response_robust(api_key, model_preferences, content):
+    """
+    Tries multiple model names in order until one works.
+    This handles 404 errors if a specific model alias isn't found.
+    """
+    genai.configure(api_key=api_key)
+    
+    last_error = None
+    
+    for model_name in model_preferences:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(content)
+            return response
+        except Exception as e:
+            last_error = e
+            # If it's not a 404 (model not found), it might be a legitimate API error (quota, etc), so we might want to stop.
+            # But for this purpose, we assume most errors are model instantiation/version issues.
+            print(f"Model {model_name} failed: {e}")
+            continue
+            
+    # If we get here, all models failed
+    raise last_error
+
 def extract_pft_values_gemini(image_parts, api_key):
     """
-    Uses Gemini 1.5 Flash to extract data from the image.
-    Flash is faster and cheaper for extraction tasks.
+    Uses Gemini Vision models to extract data.
+    Tries Flash -> Flash-001 -> Pro-Vision -> Pro-001
     """
     try:
-        genai.configure(api_key=api_key)
-        # Using 1.5 Flash for speed and vision capabilities
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Priority list of models to try for Vision tasks
+        vision_models = [
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-latest',
+            'gemini-1.5-flash-001',
+            'gemini-1.5-pro',
+            'gemini-1.5-pro-latest',
+            'gemini-pro-vision' # Legacy fallback
+        ]
         
         prompt = """
         You are a medical data extraction assistant. 
@@ -90,22 +121,27 @@ def extract_pft_values_gemini(image_parts, api_key):
         Look closely at the columns. Usually labeled "Pre", "Observed", "Actual" vs "Ref", "Pred", "%Pred".
         """
         
-        response = model.generate_content([prompt, image_parts[0]])
+        response = get_gemini_response_robust(api_key, vision_models, [prompt, image_parts[0]])
         cleaned_json = clean_json_string(response.text)
         return json.loads(cleaned_json)
         
     except Exception as e:
-        st.error(f"Extraction Error: {str(e)}")
+        st.error(f"Extraction failed on all attempted models. Error: {str(e)}")
         return None
 
 def analyze_results_gemini(data, api_key):
     """
-    Uses Gemini 1.5 Pro for medical reasoning and interpretation.
+    Uses Gemini Text models for medical reasoning.
     """
     try:
-        genai.configure(api_key=api_key)
-        # Using 1.5 Pro for better reasoning capabilities
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        # Priority list of models to try for Text Analysis
+        text_models = [
+            'gemini-1.5-pro',
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-pro-001',
+            'gemini-1.5-flash',
+            'gemini-pro' # Legacy fallback
+        ]
         
         prompt = f"""
         You are an expert Pulmonologist (MedGemma equivalent). 
@@ -135,7 +171,7 @@ def analyze_results_gemini(data, api_key):
         [List potential causes and next steps]
         """
         
-        response = model.generate_content(prompt)
+        response = get_gemini_response_robust(api_key, text_models, prompt)
         return response.text
     except Exception as e:
         return f"Analysis Error: {str(e)}"
@@ -171,9 +207,9 @@ with st.sidebar:
     
     st.markdown("---")
     st.info("""
-    **How it works:**
-    1. **Gemini 1.5 Flash**: Reads the numbers from your image/PDF (OCR).
-    2. **Gemini 1.5 Pro**: Acts as a specialist to interpret the clinical findings.
+    **Models Used:**
+    * **OCR:** Gemini 1.5 Flash (Falls back to Pro/Vision if unavailable)
+    * **Analysis:** Gemini 1.5 Pro (Falls back to Flash/Pro if unavailable)
     """)
     
     st.markdown("---")
@@ -187,7 +223,7 @@ with st.sidebar:
 
 # Main Content
 st.markdown('<h1 class="main-header">🫁 AI Pulmonary Function Analysis</h1>', unsafe_allow_html=True)
-st.markdown('<div style="text-align: center;">Powered by Google Gemini 1.5 Pro & Flash</div>', unsafe_allow_html=True)
+st.markdown('<div style="text-align: center;">Powered by Google Gemini 1.5</div>', unsafe_allow_html=True)
 
 # Step 1: Upload
 st.markdown('<div class="section-header">1. Upload Report</div>', unsafe_allow_html=True)
@@ -210,7 +246,7 @@ with col2:
     st.info("Upload a report to enable extraction.")
     if uploaded_file and api_key:
         if st.button("🚀 AI Extract Values", type="primary"):
-            with st.spinner("Gemini is reading the document..."):
+            with st.spinner("Gemini is reading the document (Trying optimal models)..."):
                 extracted_data = extract_pft_values_gemini([image_data], api_key)
                 if extracted_data:
                     st.session_state.pft_data.update(extracted_data)
@@ -249,11 +285,12 @@ if st.button("🧠 Generate Expert Analysis"):
     if not api_key:
         st.error("Please provide an API Key in the sidebar.")
     else:
-        # Check if data is empty
-        if st.session_state.pft_data['FEV1_FVC'] == 0 and st.session_state.pft_data['FVC_pred'] == 0:
-            st.warning("⚠️ The values seem to be empty. Please enter data or upload a report.")
+        # Check if data is empty (basic check)
+        all_zeros = all(value == 0 for value in st.session_state.pft_data.values())
+        if all_zeros:
+            st.warning("⚠️ The values seem to be all zero. Please upload a report and extract, or enter data manually.")
         else:
-            with st.spinner("Consulting MedGemma model..."):
+            with st.spinner("Consulting AI model..."):
                 analysis = analyze_results_gemini(st.session_state.pft_data, api_key)
                 st.session_state.analysis_result = analysis
 
@@ -263,7 +300,7 @@ if st.session_state.analysis_result:
     
     # Disclaimer
     st.warning("""
-    **Disclaimer:** This tool uses Artificial Intelligence (Gemini 1.5) to assist in interpretation. 
+    **Disclaimer:** This tool uses Artificial Intelligence to assist in interpretation. 
     It is not a medical device and should not replace professional medical advice. 
     Always verify results with the original report and clinical presentation.
     """)

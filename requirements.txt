@@ -1,7 +1,5 @@
 streamlit
-pytesseract
-Pillow
+google-generativeai>=0.7.2
+pillow
 pdf2image
 pandas
-google-generativeai
-

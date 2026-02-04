@@ -23,17 +23,14 @@ def clean_json_string(json_str):
     return json_str.strip()
 
 def process_uploaded_file(uploaded_file):
-    """Convert upload to format compatible with Gemini"""
     try:
         if uploaded_file.type == "application/pdf":
-            # Convert first page of PDF to image
             images = pdf2image.convert_from_bytes(uploaded_file.read())
             if images:
                 img_byte_arr = io.BytesIO()
                 images[0].save(img_byte_arr, format='JPEG')
                 return {'mime_type': 'image/jpeg', 'data': img_byte_arr.getvalue()}, images[0]
         else:
-            # It's an image
             return {'mime_type': uploaded_file.type, 'data': uploaded_file.getvalue()}, Image.open(uploaded_file)
     except Exception as e:
         st.error(f"File processing error: {e}")
@@ -42,12 +39,22 @@ def process_uploaded_file(uploaded_file):
 
 # --- AI FUNCTIONS ---
 
-def extract_pft_values_gemini(image_parts, api_key):
-    """Uses Gemini 1.5 Flash (Vision)"""
+def get_available_models(api_key):
+    """Fetch list of models available to this API key"""
+    try:
+        genai.configure(api_key=api_key)
+        # List models that support content generation
+        models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                models.append(m.name)
+        return models
+    except Exception as e:
+        return []
+
+def extract_pft_values_gemini(image_parts, api_key, model_name):
+    """Uses selected model for Vision"""
     genai.configure(api_key=api_key)
-    
-    # We try specific stable model names
-    model_name = 'gemini-1.5-flash'
     
     try:
         model = genai.GenerativeModel(model_name)
@@ -64,7 +71,6 @@ def extract_pft_values_gemini(image_parts, api_key):
         }
         """
         
-        # Flash 1.5 is standard now, no need for complex fallbacks if lib is updated
         response = model.generate_content([prompt, image_parts[0]])
         return json.loads(clean_json_string(response.text))
         
@@ -72,12 +78,12 @@ def extract_pft_values_gemini(image_parts, api_key):
         st.error(f"Extraction Error using {model_name}: {str(e)}")
         return None
 
-def analyze_results_gemini(data, api_key):
-    """Uses Gemini 1.5 Pro (Reasoning)"""
+def analyze_results_gemini(data, api_key, model_name):
+    """Uses selected model for Reasoning"""
     genai.configure(api_key=api_key)
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        model = genai.GenerativeModel(model_name)
         
         prompt = f"""
         Act as a Pulmonologist. Interpret these PFT results:
@@ -102,23 +108,32 @@ if 'pft_data' not in st.session_state:
 
 # Sidebar
 with st.sidebar:
-    st.header("⚙️ Settings")
+    st.header("⚙️ Configuration")
     api_key = st.text_input("Gemini API Key", type="password")
     
-    if st.button("🛠️ Debug: Check Available Models"):
-        if not api_key:
-            st.error("Enter API Key first")
+    available_models = []
+    selected_model = "models/gemini-1.5-flash" # default fallback
+    
+    if api_key:
+        # Dynamic Model Loading
+        available_models = get_available_models(api_key)
+        if available_models:
+            st.success(f"✅ Found {len(available_models)} models")
+            # Try to pick a good default
+            default_index = 0
+            if 'models/gemini-1.5-flash' in available_models:
+                default_index = available_models.index('models/gemini-1.5-flash')
+            elif 'models/gemini-pro-vision' in available_models:
+                default_index = available_models.index('models/gemini-pro-vision')
+            
+            selected_model = st.selectbox(
+                "Select AI Model", 
+                available_models, 
+                index=default_index,
+                help="If one fails, try another."
+            )
         else:
-            try:
-                genai.configure(api_key=api_key)
-                models = [m.name for m in genai.list_models()]
-                st.write("Available Models:", models)
-                if 'models/gemini-1.5-flash' in models:
-                    st.success("✅ Gemini 1.5 Flash is available!")
-                else:
-                    st.error("❌ Gemini 1.5 Flash NOT found. Check requirements.txt")
-            except Exception as e:
-                st.error(f"API Error: {e}")
+            st.warning("⚠️ Could not list models. Check API Key or Region.")
 
 # Main Layout
 st.title("🫁 AI PFT Analyzer")
@@ -133,8 +148,9 @@ if uploaded_file and api_key:
         st.image(display_img, caption="Report Preview", width=400)
         
         if st.button("🚀 Extract Data"):
-            with st.spinner("Extracting..."):
-                result = extract_pft_values_gemini([img_data], api_key)
+            with st.spinner(f"Extracting using {selected_model}..."):
+                # Use the user-selected model
+                result = extract_pft_values_gemini([img_data], api_key, selected_model)
                 if result:
                     st.session_state.pft_data.update(result)
                     st.success("Extracted!")
@@ -159,7 +175,7 @@ if uploaded_file and api_key:
     # Analysis
     if st.button("🧠 Analyze Clinical Findings"):
         with st.spinner("Analyzing..."):
-            report = analyze_results_gemini(st.session_state.pft_data, api_key)
+            report = analyze_results_gemini(st.session_state.pft_data, api_key, selected_model)
             st.markdown("---")
             st.markdown(report)
 
